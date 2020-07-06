@@ -1,5 +1,5 @@
 
-const Torrent = require('@satellite-earth/dev-torrent');
+const Torrent = require('@satellite-earth/torrent');
 
 class Signal extends Torrent {
 
