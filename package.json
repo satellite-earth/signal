@@ -1,13 +1,13 @@
 {
   "name": "@satellite-earth/signal",
-  "version": "1.0.1",
+  "version": "2.0.0",
   "description": "",
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "dependencies": {
-    "@satellite-earth/torrent": "^1.0.0"
+    "@satellite-earth/torrent": "^2.0.0"
   },
   "author": {
     "name": "Stuart Bowman",

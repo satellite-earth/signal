@@ -1,5 +1,5 @@
-
 const Torrent = require('@satellite-earth/torrent');
+
 
 class Signal extends Torrent {
 
@@ -7,68 +7,90 @@ class Signal extends Torrent {
 
 		super(payload);
 
+		const required = [ 'action', 'epoch', 'block' ];
+
 		if (signalParams) { // Compose human-signable consensus and intention
-			
-			// Set fundamental parameters common to all signals
-			for (let param of [ 'sender', 'action', 'epoch', 'block' ]) {
+
+			let consensus;
+
+			if (typeof signalParams.sender !== 'undefined') {
+
+				let _sender = signalParams.sender;
+				if (typeof signalParams.namespace === 'string') {
+					_sender += `.${signalParams.namespace}`;
+				}
+
+				this.sender = signalParams.sender;
+				consensus = [ _sender ];
+
+			} else {
+				consensus = []
+			}
+
+			for (let param of required) {
 				if (typeof param === 'undefined') {
 					throw Error(`Missing required signal param '${param}'`);
+				} else {
+					consensus.push(signalParams[param]);
+					this[param] = signalParams[param];
 				}
 			}
 
-			// Assign signal params
-			this.sender = signalParams.sender;
-			this.action = signalParams.action;
-			this.epoch = signalParams.epoch;
-			this.block = signalParams.block;
-
 			// Optionally set temporal and world params for this signal
-			for (let coord of [ 'blockNumber', 'timestamp', 'world' ]) {
+			for (let coord of [ 'blockNumber', 'timestamp', 'world', 'namespace' ]) {
 				if (typeof signalParams[coord] !== 'undefined') {
 					this._params_[coord] = signalParams[coord];
 				}
 			}
 
-			// Construct consensus string: "who" > "what" > "where" > "when"
-			this._signed_['@'] = `${this.sender} > ${this.action} > ${this.epoch} > ${this.block}`;
+			// Consensus string: "who" > "what" > "where" > "when"
+			// ("who" is omitted to indicate an anonymous signal)
+			this._signed_['@'] = consensus.join(' > ');
 
 		} else if (this.consensus) { // Parse consensus string
-			const sp = this.consensus.split(' > ');
-			this.sender = sp[0];
-			this.action = sp[1];
-			this.epoch = sp[2];
-			this.block = sp[3];
+
+			const params = this.consensus.split(' > ');
+			let i = 0;
+			
+			// If sender is defined, infer namespace. Null
+			// value indicates top level contract names.
+			if (params.length > 3) {
+				const _s = params[0].split('.');
+				this._params_.namespace = typeof _s[1] === 'undefined' ? null : _s[1];
+				this.authorAlias = _s[0];
+				this.sender = _s[0];
+				i = 1;
+			}
+
+			for (let p = 0; p < required.length; p++) {
+				this[required[p]] = params[p + i];
+			}
 		}
 	}
 
-	// Override Message class signature to add alias name
-	// of world signer as the EIP-712 domain separator
-	async sign (earth) {
+	// Override Message class
+	async sign (earth, options = {}) {
 
-		return await super.sign(earth, [{
-			name: 'name',
-			type: 'string',
-			value: this.world
-		}]);
+		// Add world signer as the EIP-712 domain separator
+		await super.sign(earth, this.EIP712Domain, options);
+
+		// Add alias so signal can be applied to local states
+		if (typeof this.sender !== 'undefined') {
+			this.authorAlias = this.sender;
+		}
+
+		return this;
 	};
 
 	// Override verify() from Message class
 	async verify (earth) {
 
-		if (typeof this.sender === 'undefined') {
-			throw Error('Cannot verify if signal \'sender\' is undefined');
-		}
-
 		// Verify authorship and integrity, adding
 		// world name in EIP-712 domain separator
-		await super.verify(earth, [{
-			name: 'name',
-			type: 'string',
-			value: this.world
-		}]);
+		await super.verify(earth, this.EIP712Domain);
 
 		// Check that explicit 'sender' matches verified author
-		if (this.sender !== this.authorAlias) {
+		if (typeof this.sender !== 'undefined' && this.sender !== this.authorAlias) {
 			throw Error('Signal param \'sender\' does not match verified author alias');
 		}
 
@@ -76,22 +98,14 @@ class Signal extends Torrent {
 	}
 
 	// Override verifySync() from Message class
-	verifySync (earth, blockNumber) {
-
-		if (typeof this.sender === 'undefined') {
-			throw Error('Cannot verify if signal \'sender\' is undefined');
-		}
+	verifySync (earth) {
 
 		// Verify authorship and integrity, adding
 		// world name as EIP-712 domain separator
-		super.verifySync(earth, blockNumber, [{
-			name: 'name',
-			type: 'string',
-			value: this.world
-		}]);
+		super.verifySync(earth, this.EIP712Domain);
 
 		// Check that explicit 'sender' matches verified author
-		if (this.sender !== this.authorAlias) {
+		if (typeof this.sender !== 'undefined' && this.sender !== this.authorAlias) {
 			throw Error('Signal param \'sender\' does not match verified author alias');
 		}
 
@@ -99,34 +113,25 @@ class Signal extends Torrent {
 	}
 
 	// Populate blockNumber and timestamp asynchronously
-	async locate (earth) {
-
-		if (!earth) { // Earth API instance is needed to access blockchain
-			throw Error('Must provide Earth API instance');
-		}
+	async locate (eth) {
 
 		if (typeof this.block === 'undefined') { // Must have signed blockhash
 			throw Error('Cannot locate if signal \'block\' is undefined');
 		}
 
-		// Get block data directly from blockchain
-		const info = await earth.web3.eth.getBlock(this.block);
-
-		if (info) {
-			const params = { blockNumber: info.blockNumber, timestamp: info.timestamp };
-			this.addParams(params);
-			return params;
-		} else {
-			this.clearLocation();
+		if (!clock.readHash) {
+			throw Error('Missing eth interface function \'getBlock\'')
 		}
 
-		return this;
+		// Get block data directly from blockchain
+		const data = await eth.getBlock(this.block);
+		return this.coordinate(data);
 	}
 
-	// Populate blockNumber and timestamp asynchronously
-	locateSync (earth, confirm) {
+	// Populate blockNumber and timestamp synchronously
+	locateSync (clock, confirm) {
 
-		if (!earth) { // Earth API instance is needed to access clock
+		if (!clock) { // Earth API instance is needed to access clock
 			throw Error('Must provide Earth API instance');
 		}
 
@@ -134,18 +139,34 @@ class Signal extends Torrent {
 			throw Error('Cannot locate if signal \'block\' is undefined');
 		}
 
-		// Get block data from Earth's internal clock
-		const info = earth.clock.readHash(this.block, confirm);
+		if (!clock.readHash) {
+			throw Error('Missing clock interface function \'readHash\'')
+		}
 
-		if (info) {
-			const params = { blockNumber: info.number, timestamp: info.timestamp };
-			this.addParams(params);
-			return params;
-		} else {
-			this.clearLocation();
+		// Get block data from Earth's internal clock
+		const data = clock.readHash(this.block, confirm);
+		return this.coordinate(data);
+	}
+
+	coordinate (coords = {}) {
+
+		if (typeof this.blockNumber === 'undefined') {				
+			this._params_.blockNumber = coords.number;
+		} else if (this.blockNumber !== coords.number) {
+			throw Error('Signal block number does not match claimed value');
+		}
+
+		if (typeof this.timestamp === 'undefined') {				
+			this._params_.timestamp = coords.timestamp;
+		} else if (this.timestamp !== coords.timestamp) {
+			throw Error('Signal timestamp does not match claimed value');
 		}
 
 		return this;
+	}
+
+	address () {
+		return super.address(this.EIP712Domain);
 	}
 
 	// Unambgiously determine sort order with respect to another signal
@@ -228,18 +249,16 @@ class Signal extends Torrent {
 	get payload () {
 		return {
 			_signed_: this._signed_,
-			_params_: {
-				sig: this._params_.sig,
-				alias: this._params_.alias,
-				world: this._params_.world,
-				timestamp: this._params_.timestamp,
-				blockNumber: this._params_.blockNumber
-			}
+			_params_: this._params_
 		};
 	}
 
 	get world () {
 		return this._params_.world;
+	}
+
+	get namespace () {
+		return this._params_.namespace;
 	}
 
 	get blockNumber () {
@@ -277,6 +296,14 @@ class Signal extends Torrent {
 
 	get consensus () {
 		return this._signed_['@'];
+	}
+
+	get EIP712Domain () {
+		return [{
+			name: 'name',
+			type: 'string',
+			value: this.world
+		}];
 	}
 }
 
